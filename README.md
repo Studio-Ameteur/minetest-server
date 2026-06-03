@@ -145,6 +145,8 @@ python main.py
 
 Подробная спецификация: [docs/api.md](docs/api.md)
 
+Документация по эксплуатации Server Manager: [docs/usage.md](docs/usage.md)
+
 Минимально необходимые эндпоинты для этапа 1:
 - `POST /api/auth/login` — авторизация игрока
 - `GET /api/account/status` — статус аккаунта и привилегии
