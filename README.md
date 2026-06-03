@@ -1,27 +1,37 @@
 # minetest-server
 
-Игровой сервер на базе [Minetest / Luanti](https://github.com/minetest/minetest) с интеграцией Laravel API, системой VIP-статусов и привилегий.
+Игровой сервер на базе [Minetest / Luanti](https://github.com/minetest/minetest) с интеграцией Laravel API, системой VIP-статусов, привилегий и инструментом управления сервером.
 
 ## Архитектура
 
 Вся бизнес-логика реализована через Lua-моды — ядро Minetest не модифицируется. Это позволяет обновлять ядро без переработки проекта и легко добавлять новый функционал.
 
+Авторизация и статусы синхронизируются с Laravel через REST API. Пока Laravel не готов — работает stub-режим с тестовыми аккаунтами.
+
 ```
 minetest-server/
+├── .github/
+│   └── workflows/
+│       └── build.yml              # Автосборка exe при пуше в main
 ├── mods/
-│   ├── auth_laravel/          # Авторизация через Laravel API
-│   │   ├── init.lua           # Основная логика авторизации
-│   │   └── mod.conf           # Метаданные мода
-│   └── vip_system/            # VIP-статусы и привилегии
-│       ├── init.lua           # Логика VIP-системы
-│       └── mod.conf           # Метаданные мода
+│   ├── auth_laravel/              # Авторизация через Laravel API
+│   │   ├── init.lua               # Логика авторизации (stub + реальный API)
+│   │   └── mod.conf               # Метаданные мода
+│   └── vip_system/                # VIP-статусы и привилегии
+│       ├── init.lua               # Логика VIP, периодическая синхронизация
+│       └── mod.conf               # Метаданные мода (зависит от auth_laravel)
 ├── config/
-│   └── minetest.conf          # Конфигурация сервера
+│   └── minetest.conf              # Конфигурация сервера
 ├── docs/
-│   └── api.md                 # Спецификация Laravel API
-├── install.sh                 # Скрипт установки
-├── .env.example               # Шаблон переменных окружения
-├── .gitignore                 # Исключения для Git
+│   └── api.md                     # Спецификация Laravel API
+├── tools/
+│   └── server-manager/            # GUI-инструмент управления сервером
+│       ├── main.py                # Интерфейс (окно входа, управление, статистика)
+│       ├── server.py              # SSH-подключение, команды, статистика
+│       └── requirements.txt       # Зависимости Python
+├── install.sh                     # Скрипт установки сервера
+├── .env.example                   # Шаблон переменных окружения
+├── .gitignore                     # Исключения для Git
 └── README.md
 ```
 
@@ -40,7 +50,7 @@ minetest-server/
 - 8 ядер / 16 ГБ → 80–120 игроков
 - Выше 120 → шардирование (отдельный этап)
 
-## Установка
+## Установка сервера
 
 ```bash
 # 1. Клонировать репозиторий
@@ -56,8 +66,6 @@ nano /opt/minetest-server/.env
 
 ## Настройка .env
 
-Скопируйте `.env.example` в `.env` и заполните реальными значениями:
-
 ```bash
 cp .env.example .env
 nano .env
@@ -66,35 +74,67 @@ nano .env
 | Параметр | Описание |
 |----------|----------|
 | `LARAVEL_API_URL` | Базовый URL вашего Laravel API |
-| `LARAVEL_SERVER_TOKEN` | Серверный токен для идентификации |
+| `LARAVEL_SERVER_TOKEN` | Серверный токен для идентификации сервера |
 | `SERVER_PORT` | Порт сервера (по умолчанию 30000) |
 
 ## Управление сервером
 
+### Через командную строку (SSH)
+
 ```bash
-# Запуск
-systemctl start minetest
-
-# Остановка
-systemctl stop minetest
-
-# Перезагрузка
-systemctl restart minetest
-
-# Статус
-systemctl status minetest
-
-# Логи в реальном времени
-journalctl -u minetest -f
+systemctl start minetest      # Запуск
+systemctl stop minetest       # Остановка
+systemctl restart minetest    # Перезагрузка
+systemctl status minetest     # Статус
+journalctl -u minetest -f     # Логи в реальном времени
 ```
+
+### Через GUI (Server Manager)
+
+Десктопное приложение для управления сервером без командной строки.
+
+**Функционал:**
+- Авторизация по SSH (логин/пароль)
+- Запуск / остановка / перезагрузка сервера одной кнопкой
+- Мониторинг статуса сервиса в реальном времени
+- Окно статистики: CPU, RAM, диск, uptime, нагрузка, онлайн игроков
+- Нагрузочное тестирование (стресс-тест с настройкой длительности)
+- Лог всех действий внутри приложения
+
+**Запуск из исходников:**
+```bash
+cd tools/server-manager
+pip install -r requirements.txt
+python main.py
+```
+
+**Сборка exe:**
+Происходит автоматически через GitHub Actions при пуше в `main`.
+Скачать: вкладка Actions → последний билд → артефакт `MinetestManager`.
 
 ## Моды
 
 ### auth_laravel
-Авторизует игроков через Laravel API. Пока API не готов — работает в stub-режиме с тестовыми аккаунтами. Для переключения на реальный API установите `stub_mode = false` в `mods/auth_laravel/init.lua`.
+Авторизует игроков через Laravel API. Пока API не готов — работает в stub-режиме.
+Для переключения на реальный API: `stub_mode = false` в `mods/auth_laravel/init.lua`.
+
+**Тестовые аккаунты (stub-режим):**
+| Логин | Статус |
+|-------|--------|
+| `admin` | admin |
+| `vip_player` | vip |
+| Любой другой | basic |
 
 ### vip_system
-Управляет статусами и привилегиями игроков. Статусы: `basic`, `vip`, `premium`, `admin`. Привилегии подтягиваются из Laravel при входе и обновляются каждые 5 минут.
+Управляет статусами и привилегиями. Синхронизируется с Laravel при входе и каждые 5 минут.
+
+**Статусы и привилегии:**
+| Статус | Привилегии |
+|--------|-----------|
+| `basic` | interact, shout |
+| `vip` | + fly, fast, home |
+| `premium` | + noclip, teleport |
+| `admin` | все привилегии |
 
 **Команды в игре:**
 ```
@@ -103,13 +143,21 @@ journalctl -u minetest -f
 
 ## Интеграция с Laravel
 
-Подробная спецификация API: [docs/api.md](docs/api.md)
+Подробная спецификация: [docs/api.md](docs/api.md)
 
-Минимально необходимые эндпоинты:
+Минимально необходимые эндпоинты для этапа 1:
 - `POST /api/auth/login` — авторизация игрока
-- `GET /api/account/status` — статус и привилегии
+- `GET /api/account/status` — статус аккаунта и привилегии
+- `POST /api/auth/verify` — проверка токена сессии
+
+## Масштабирование
+
+При росте аудитории выше 100–120 игроков — шардирование:
+- Несколько независимых серверов Minetest
+- Единый аккаунт и статус через Laravel (один источник истины)
+- Игроки распределяются по серверам прозрачно
 
 ## Этапы разработки
 
-- [x] Этап 1 — MVP: сервер, авторизация, VIP-статусы
+- [x] Этап 1 — MVP: сервер, авторизация, VIP-статусы, Server Manager
 - [ ] Этап 2 — Браузерная версия (WebAssembly + WebSocket-прокси)
