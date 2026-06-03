@@ -2,7 +2,8 @@
 # ФАЙЛ: .github/workflows/build.yml
 # Назначение: автоматическая сборка exe
 # Запускается при пуше в ветку main
-# Результат: exe файл в разделе Releases
+# или вручную через кнопку Run workflow
+# Результат: exe файл в разделе Artifacts
 # ===========================================
 
 name: Build Server Manager
@@ -11,8 +12,9 @@ on:
   push:
     branches: [ main ]
     paths:
-      # Запускаем сборку только если изменились файлы менеджера
       - 'tools/server-manager/**'
+  # Ручной запуск через кнопку в Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -35,9 +37,6 @@ jobs:
         run: pip install -r requirements.txt
 
       # Шаг 4 — Собираем exe
-      # --onefile    = один exe файл
-      # --windowed   = без консольного окна
-      # --name       = название exe файла
       - name: Build exe
         working-directory: tools/server-manager
         run: |
