@@ -1,0 +1,51 @@
+# ===========================================
+# ФАЙЛ: .github/workflows/build.yml
+# Назначение: автоматическая сборка exe
+# Запускается при пуше в ветку main
+# Результат: exe файл в разделе Releases
+# ===========================================
+
+name: Build Server Manager
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      # Запускаем сборку только если изменились файлы менеджера
+      - 'tools/server-manager/**'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # Шаг 1 — Получаем код
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Шаг 2 — Устанавливаем Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Шаг 3 — Устанавливаем зависимости
+      - name: Install dependencies
+        working-directory: tools/server-manager
+        run: pip install -r requirements.txt
+
+      # Шаг 4 — Собираем exe
+      # --onefile    = один exe файл
+      # --windowed   = без консольного окна
+      # --name       = название exe файла
+      - name: Build exe
+        working-directory: tools/server-manager
+        run: |
+          pyinstaller --onefile --windowed --name "MinetestManager" main.py
+
+      # Шаг 5 — Публикуем exe как артефакт
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinetestManager
+          path: tools/server-manager/dist/MinetestManager.exe
