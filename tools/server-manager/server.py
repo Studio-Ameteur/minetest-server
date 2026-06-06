@@ -77,32 +77,36 @@ class ServerConnection:
 
     # -------------------------------------------
     # ВЫПОЛНЕНИЕ КОМАНДЫ НА СЕРВЕРЕ
-    # Возвращает вывод команды или None при ошибке
+    # Возвращает (stdout, stderr) или (None, текст_ошибки)
     # -------------------------------------------
     def run_command(self, command):
         if not self.connected:
             return None
         try:
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=10)
-            return stdout.read().decode("utf-8").strip()
-        except Exception:
+            stdin, stdout, stderr = self.client.exec_command(command, timeout=15)
+            out = stdout.read().decode("utf-8").strip()
+            err = stderr.read().decode("utf-8").strip()
+            # Если есть вывод — возвращаем его, иначе ошибку
+            return out if out else (err or None)
+        except Exception as e:
             return None
 
     # -------------------------------------------
     # УПРАВЛЕНИЕ СЕРВИСОМ MINETEST
     # Запуск, остановка, перезагрузка
+    # sudo нужен если пользователь не root
     # -------------------------------------------
     def start_server(self):
-        result = self.run_command(f"systemctl start {SETTINGS['service_name']} && echo OK")
-        return result == "OK"
+        result = self.run_command(f"sudo systemctl start {SETTINGS['service_name']} 2>&1 && echo OK")
+        return "OK" in (result or "")
 
     def stop_server(self):
-        result = self.run_command(f"systemctl stop {SETTINGS['service_name']} && echo OK")
-        return result == "OK"
+        result = self.run_command(f"sudo systemctl stop {SETTINGS['service_name']} 2>&1 && echo OK")
+        return "OK" in (result or "")
 
     def restart_server(self):
-        result = self.run_command(f"systemctl restart {SETTINGS['service_name']} && echo OK")
-        return result == "OK"
+        result = self.run_command(f"sudo systemctl restart {SETTINGS['service_name']} 2>&1 && echo OK")
+        return "OK" in (result or "")
 
     # -------------------------------------------
     # СТАТУС СЕРВИСА
