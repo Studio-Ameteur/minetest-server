@@ -230,7 +230,7 @@ class MainWindow:
                    lambda: self._server_action("restart"),
                    color=COLORS["warning"]).pack(side="left", padx=6)
 
-        FlatButton(btn_row, " Статистика",
+        FlatButton(btn_row, "📊  Статистика",
                    self._open_stats).pack(side="left", padx=6)
 
         # Кнопка стресс-теста
@@ -253,7 +253,7 @@ class MainWindow:
                    bg=COLORS["bg_secondary"], fg=COLORS["text"],
                    relief="flat").pack(side="left", padx=8)
 
-        FlatButton(stress_row, "Имитировать нагрузку",
+        FlatButton(stress_row, "⚡ Имитировать нагрузку",
                    self._run_stress,
                    color=COLORS["warning"]).pack(side="left", padx=8)
 
@@ -287,8 +287,11 @@ class MainWindow:
         self._log(msg)
 
         def do():
-            ok = func()
-            result = "✓ Выполнено" if ok else "✗ Ошибка выполнения"
+            ok, detail = func()
+            if ok:
+                result = "✓ Выполнено"
+            else:
+                result = f"✗ Ошибка: {detail}"
             self.root.after(0, lambda: self._log(result))
             self.root.after(0, self._refresh_status)
 
@@ -381,14 +384,14 @@ class StatsWindow:
         # Метрики
         self.metrics = {}
         rows = [
-            ("cpu",      "CPU"),
-            ("ram",      "RAM (МБ)"),
-            ("disk",     "Диск"),
-            ("uptime",   " Uptime"),
-            ("players",  "Игроков за час"),
-            ("load_1m",  "Нагрузка 1 мин"),
-            ("load_5m",  " Нагрузка 5 мин"),
-            ("load_15m", "Нагрузка 15 мин"),
+            ("cpu",      "🖥  CPU"),
+            ("ram",      "💾  RAM (МБ)"),
+            ("disk",     "💿  Диск"),
+            ("uptime",   "⏱  Uptime"),
+            ("players",  "👥  Игроков за час"),
+            ("load_1m",  "📈  Нагрузка 1 мин"),
+            ("load_5m",  "📈  Нагрузка 5 мин"),
+            ("load_15m", "📈  Нагрузка 15 мин"),
         ]
 
         for key, label in rows:
