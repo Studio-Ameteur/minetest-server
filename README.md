@@ -2,6 +2,18 @@
 
 Игровой сервер на базе [Minetest / Luanti](https://github.com/minetest/minetest) с интеграцией Laravel API, системой VIP-статусов, привилегий и инструментом управления сервером.
 
+## Текущий статус
+
+| Компонент | Статус |
+|-----------|--------|
+| Игровой сервер | ✅ Запущен |
+| Мод auth_laravel | ✅ Загружен (stub-режим) |
+| Мод vip_system | ✅ Загружен (stub-режим) |
+| Команда /mystatus | ✅ Работает |
+| GUI Server Manager | ✅ Готов |
+| Интеграция Laravel API | ⏳ Ожидаем API |
+| Браузерная версия | ⏳ Этап 2 |
+
 ## Архитектура
 
 Вся бизнес-логика реализована через Lua-моды — ядро Minetest не модифицируется. Это позволяет обновлять ядро без переработки проекта и легко добавлять новый функционал.
@@ -23,7 +35,8 @@ minetest-server/
 ├── config/
 │   └── minetest.conf              # Конфигурация сервера
 ├── docs/
-│   └── api.md                     # Спецификация Laravel API
+│   ├── api.md                     # Спецификация Laravel API
+│   └── usage.md                   # Документация по эксплуатации Server Manager
 ├── tools/
 │   └── server-manager/            # GUI-инструмент управления сервером
 │       ├── main.py                # Интерфейс (окно входа, управление, статистика)
@@ -54,22 +67,22 @@ minetest-server/
 
 ```bash
 # 1. Клонировать репозиторий
-git clone https://github.com/Studio-Ameteur/minetest-server
-cd minetest-server
+git clone https://github.com/Studio-Ameteur/minetest-server /opt/minetest-server
+cd /opt/minetest-server
 
 # 2. Запустить скрипт установки (требуются права root)
 sudo bash install.sh
 
-# 3. Заполнить настройки
-nano /opt/minetest-server/.env
-```
+# 3. Скопировать моды в папку мира
+mkdir -p /home/minetest/.minetest/worlds/world/worldmods
+cp -r mods/* /home/minetest/.minetest/worlds/world/worldmods/
 
-## Настройка .env
-
-```bash
+# 4. Заполнить настройки
 cp .env.example .env
 nano .env
 ```
+
+## Настройка .env
 
 | Параметр | Описание |
 |----------|----------|
@@ -86,7 +99,7 @@ systemctl start minetest      # Запуск
 systemctl stop minetest       # Остановка
 systemctl restart minetest    # Перезагрузка
 systemctl status minetest     # Статус
-journalctl -u minetest -f     # Логи в реальном времени
+journalctl -u minetest -n 50  # Логи
 ```
 
 ### Через GUI (Server Manager)
@@ -112,6 +125,8 @@ python main.py
 Происходит автоматически через GitHub Actions при пуше в `main`.
 Скачать: вкладка Actions → последний билд → артефакт `MinetestManager`.
 
+Подробная документация: [docs/usage.md](docs/usage.md)
+
 ## Моды
 
 ### auth_laravel
@@ -121,9 +136,9 @@ python main.py
 **Тестовые аккаунты (stub-режим):**
 | Логин | Статус |
 |-------|--------|
-| `admin` | admin |
-| `vip_player` | vip |
-| Любой другой | basic |
+| `admin` | admin — все привилегии |
+| `vip_player` | vip — полёт, ускорение, home |
+| Любой другой | basic — базовые привилегии |
 
 ### vip_system
 Управляет статусами и привилегиями. Синхронизируется с Laravel при входе и каждые 5 минут.
@@ -145,12 +160,12 @@ python main.py
 
 Подробная спецификация: [docs/api.md](docs/api.md)
 
-Документация по эксплуатации Server Manager: [docs/usage.md](docs/usage.md)
-
-Минимально необходимые эндпоинты для этапа 1:
+Минимально необходимые эндпоинты:
 - `POST /api/auth/login` — авторизация игрока
 - `GET /api/account/status` — статус аккаунта и привилегии
 - `POST /api/auth/verify` — проверка токена сессии
+
+Документация по эксплуатации Server Manager: [docs/usage.md](docs/usage.md)
 
 ## Масштабирование
 
@@ -161,5 +176,8 @@ python main.py
 
 ## Этапы разработки
 
-- [x] Этап 1 — MVP: сервер, авторизация, VIP-статусы, Server Manager
-- [ ] Этап 2 — Браузерная версия (WebAssembly + WebSocket-прокси)
+- [x] Этап 1, неделя 1 — сервер запущен, моды работают, VIP-система протестирована
+- [ ] Этап 1, неделя 2 — интеграция с реальным Laravel API
+- [ ] Этап 1, неделя 3 — тестирование на реальном API, нагрузочные тесты
+- [ ] Этап 1, неделя 4 — финализация, документация, сдача
+- [ ] Этап 2 — браузерная версия (WebAssembly + WebSocket-прокси)
