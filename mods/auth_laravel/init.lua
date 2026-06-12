@@ -51,7 +51,7 @@ local function get_player_status(username, callback)
     end
 
     http.fetch({
-        url     = SETTINGS.api_url .. "/player/status?username=" .. minetest.urlencode(username),
+     url     = SETTINGS.api_url .. "/player/status?username=" .. core.urlencode(username),
         timeout = SETTINGS.request_timeout,
         method  = "GET",
         extra_headers = {
