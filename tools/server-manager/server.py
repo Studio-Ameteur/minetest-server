@@ -1,7 +1,3 @@
-# ===========================================
-# МОДУЛЬ: server.py
-# ===========================================
-
 import paramiko
 
 SETTINGS = {
@@ -120,23 +116,13 @@ class ServerConnection:
         )
         return out if out else "Логи недоступны"
 
-    # -------------------------------------------
-    # УПРАВЛЕНИЕ ИГРОКАМИ (через mod_storage Minetest)
-    # Читаем SQLite БД мода auth_laravel напрямую
-    # -------------------------------------------
     def get_players(self):
-        """
-        Возвращает список игроков из mod_storage auth_laravel.
-        Файл: /home/minetest/.minetest/worlds/world/mod_storage/auth_laravel
-        Это SQLite база с таблицей `entries` (key TEXT, value TEXT).
-        Ключи вида: player:<username>  →  JSON со статусом
-        """
         cmd = (
             "python3 -c \""
-            "import sqlite3, json, os;"
-            "db = '/home/minetest/.minetest/worlds/world/mod_storage/auth_laravel';"
+            "import sqlite3, json;"
+            "db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
             "conn = sqlite3.connect(db);"
-            "rows = conn.execute(\\\"SELECT key, value FROM entries WHERE key LIKE 'player:%'\\\").fetchall();"
+            "rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel' AND key LIKE 'player:%'\\\").fetchall();"
             "result = [];"
             "[result.append({'name': r[0][7:], **json.loads(r[1])}) for r in rows];"
             "print(json.dumps(result));"
@@ -148,7 +134,6 @@ class ServerConnection:
         try:
             import json
             players = json.loads(out)
-            # убираем хэш пароля — незачем тянуть
             for p in players:
                 p.pop("password_hash", None)
             return players
@@ -156,9 +141,6 @@ class ServerConnection:
             return []
 
     def set_player_status(self, username, new_status):
-        """
-        Меняет статус и привилегии игрока в mod_storage.
-        """
         STATUS_PRIVS = {
             "basic":   ["interact", "shout"],
             "vip":     ["interact", "shout", "fly", "fast", "home"],
@@ -171,20 +153,19 @@ class ServerConnection:
         cmd = (
             f"python3 -c \""
             f"import sqlite3, json;"
-            f"db = '/home/minetest/.minetest/worlds/world/mod_storage/auth_laravel';"
+            f"db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
             f"conn = sqlite3.connect(db);"
-            f"row = conn.execute(\\\"SELECT value FROM entries WHERE key='player:{username}'\\\").fetchone();"
+            f"row = conn.execute(\\\"SELECT value FROM entries WHERE modname='auth_laravel' AND key='player:{username}'\\\").fetchone();"
             f"data = json.loads(row[0]) if row else {{}};"
             f"data['status'] = '{new_status}';"
             f"data['privileges'] = {privs_json};"
-            f"conn.execute(\\\"INSERT OR REPLACE INTO entries (key, value) VALUES ('player:{username}', ?)\\\", (json.dumps(data),));"
+            f"conn.execute(\\\"INSERT OR REPLACE INTO entries (modname, key, value) VALUES ('auth_laravel', 'player:{username}', ?)\\\", (json.dumps(data),));"
             f"conn.commit(); conn.close(); print('OK')\""
         )
         out, err = self.run_command(cmd)
         return "OK" in out, err if "OK" not in out else None
 
     def ban_player(self, username):
-        """Бан через minetest-cli или minetest.conf ban_list"""
         out, err = self.run_command(
             f"grep -q '^ban_list' /home/minetest/.minetest/worlds/world/world.mt && "
             f"sed -i 's/^ban_list = /ban_list = {username},/' /home/minetest/.minetest/worlds/world/world.mt || "
