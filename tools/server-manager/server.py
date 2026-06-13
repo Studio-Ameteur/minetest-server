@@ -122,9 +122,12 @@ class ServerConnection:
             "import sqlite3, json;"
             "db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
             "conn = sqlite3.connect(db);"
-            "rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel' AND key LIKE 'player:%'\\\").fetchall();"
+            "rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel'\\\").fetchall();"
             "result = [];"
-            "[result.append({'name': r[0][7:], **json.loads(r[1])}) for r in rows];"
+            "[(lambda k, v: result.append({'name': k[7:], **json.loads(v)}) if k.startswith('player:') else None)("
+            "(r[0].decode() if isinstance(r[0], bytes) else r[0]),"
+            "(r[1].decode() if isinstance(r[1], bytes) else r[1])"
+            ") for r in rows];"
             "print(json.dumps(result));"
             "conn.close()\""
         )
@@ -155,8 +158,10 @@ class ServerConnection:
             f"import sqlite3, json;"
             f"db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
             f"conn = sqlite3.connect(db);"
-            f"row = conn.execute(\\\"SELECT value FROM entries WHERE modname='auth_laravel' AND key='player:{username}'\\\").fetchone();"
-            f"data = json.loads(row[0]) if row else {{}};"
+            f"rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel'\\\").fetchall();"
+            f"row = None;"
+            f"[(lambda k, v: globals().update(row=v) if (k.decode() if isinstance(k, bytes) else k) == 'player:{username}' else None)(r[0], r[1]) for r in rows];"
+            f"data = json.loads(row.decode() if isinstance(row, bytes) else row) if row else {{}};"
             f"data['status'] = '{new_status}';"
             f"data['privileges'] = {privs_json};"
             f"conn.execute(\\\"INSERT OR REPLACE INTO entries (modname, key, value) VALUES ('auth_laravel', 'player:{username}', ?)\\\", (json.dumps(data),));"
@@ -166,16 +171,16 @@ class ServerConnection:
         return "OK" in out, err if "OK" not in out else None
 
     def ban_player(self, username):
-        out, err = self.run_command(
+        self.run_command(
             f"grep -q '^ban_list' /home/minetest/.minetest/worlds/world/world.mt && "
             f"sed -i 's/^ban_list = /ban_list = {username},/' /home/minetest/.minetest/worlds/world/world.mt || "
-            f"echo 'ban_list = {username}' >> /home/minetest/.minetest/worlds/world/world.mt && echo OK"
+            f"echo 'ban_list = {username}' >> /home/minetest/.minetest/worlds/world/world.mt"
         )
         return True, None
 
     def unban_player(self, username):
-        out, err = self.run_command(
+        self.run_command(
             f"sed -i 's/{username},//g; s/,{username}//g' "
-            f"/home/minetest/.minetest/worlds/world/world.mt && echo OK"
+            f"/home/minetest/.minetest/worlds/world/world.mt"
         )
         return True, None
