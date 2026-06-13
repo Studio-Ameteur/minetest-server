@@ -1,231 +1,288 @@
 -- ===========================================
 -- МОДУЛЬ: auth_laravel
 -- Назначение: авторизация игроков через Laravel API
--- Все запросы к API делаются через request_http_api()
--- Ядро Minetest не модифицируется
+-- В stub-режиме: локальная БД с паролями и привилегиями
 -- ===========================================
 
--- -------------------------------------------
--- НАСТРОЙКИ МОДУЛЯ
--- Измените значения под ваш Laravel API
--- -------------------------------------------
 local SETTINGS = {
-    -- Базовый URL вашего Laravel API
     api_url = minetest.settings:get("laravel_api_url") or "https://your-domain.com/api",
-
-    -- Серверный токен для идентификации сервера на стороне Laravel
     server_token = minetest.settings:get("laravel_server_token") or "REPLACE_WITH_YOUR_TOKEN",
-
-    -- Таймаут HTTP-запроса в секундах
     request_timeout = 5,
-
-    -- Включить stub-режим (true = использовать заглушку вместо реального API)
-    -- Установите false когда Laravel API будет готов
     stub_mode = true,
 }
 
 -- -------------------------------------------
--- HTTP API
--- Minetest предоставляет HTTP API только доверенным модам
--- Мод должен быть указан в secure.http_mods в minetest.conf
+-- ЛОКАЛЬНОЕ ХРАНИЛИЩЕ (mod_storage)
+-- Хранит: хэш пароля, статус, привилегии
+-- Данные сохраняются между перезапусками сервера
 -- -------------------------------------------
-local http = minetest.request_http_api()
+local storage = minetest.get_mod_storage()
+
+-- Временное хранилище для игроков в процессе входа/регистрации
+-- { [player_name] = { step = "password"|"confirm", password = "..." } }
+local pending = {}
 
 -- -------------------------------------------
--- STUB-РЕЖИМ (заглушка для разработки)
--- Используется пока Laravel API не готов
--- Возвращает фиктивные данные для тестирования
--- Чтобы отключить — установите stub_mode = false в SETTINGS
+-- ХЭШИРОВАНИЕ ПАРОЛЯ
+-- Используем SHA1 через minetest.sha1()
+-- Соль = имя игрока (защита от rainbow tables)
 -- -------------------------------------------
-local function stub_get_account(username)
-    -- Тестовые аккаунты для разработки
-    -- Формат: [username] = { status, privileges }
-    local test_accounts = {
-        ["admin"] = {
-            success = true,
-            user_id = 1,
-            status = "admin",
-            privileges = {"fly", "fast", "noclip", "setspawn", "ban", "kick"},
-            subscription_active = true,
-        },
-        ["vip_player"] = {
-            success = true,
-            user_id = 2,
-            status = "vip",
-            privileges = {"fly", "fast", "home"},
-            subscription_active = true,
-        },
-    }
-
-    -- Если игрок есть в тестовых аккаунтах — возвращаем его данные
-    if test_accounts[username] then
-        return test_accounts[username]
-    end
-
-    -- По умолчанию — базовый аккаунт
-    return {
-        success = true,
-        user_id = 0,
-        status = "basic",
-        privileges = {"interact", "shout"},
-        subscription_active = false,
-    }
+local function hash_password(username, password)
+    return minetest.sha1(username .. ":" .. password)
 end
 
 -- -------------------------------------------
--- ЗАПРОС К LARAVEL API
--- Отправляет GET-запрос к /api/account/status
--- Возвращает статус и привилегии игрока
+-- РАБОТА С ЛОКАЛЬНОЙ БД
 -- -------------------------------------------
-local function get_account_status(username, token, callback)
-    -- Если включён stub-режим — возвращаем заглушку
-    if SETTINGS.stub_mode then
-        minetest.log("action", "[auth_laravel] STUB режим: получен статус для " .. username)
-        callback(stub_get_account(username))
-        return
-    end
-
-    -- Формируем запрос к Laravel API
-    http.fetch({
-        url = SETTINGS.api_url .. "/account/status",
-        timeout = SETTINGS.request_timeout,
-        method = "GET",
-        extra_headers = {
-            "Authorization: Bearer " .. token,
-            "X-Server-Token: " .. SETTINGS.server_token,
-            "Content-Type: application/json",
-        },
-    }, function(result)
-        -- Проверяем успешность запроса
-        if not result.succeeded or result.code ~= 200 then
-            minetest.log("error", "[auth_laravel] Ошибка запроса статуса: код " .. tostring(result.code))
-            callback(nil)
-            return
-        end
-
-        -- Парсим JSON-ответ
-        local data = minetest.parse_json(result.data)
-        if not data then
-            minetest.log("error", "[auth_laravel] Ошибка парсинга ответа API")
-            callback(nil)
-            return
-        end
-
-        callback(data)
-    end)
+local function db_get(username)
+    local raw = storage:get_string("player:" .. username)
+    if raw == "" then return nil end
+    return minetest.parse_json(raw)
 end
 
--- -------------------------------------------
--- ЗАПРОС АВТОРИЗАЦИИ
--- Отправляет POST-запрос к /api/auth/login
--- Возвращает токен сессии при успехе
--- -------------------------------------------
-local function auth_login(username, password, callback)
-    -- Если включён stub-режим — пропускаем авторизацию
-    if SETTINGS.stub_mode then
-        minetest.log("action", "[auth_laravel] STUB режим: авторизация " .. username)
-        callback({ success = true, token = "stub_token_" .. username })
-        return
-    end
-
-    -- Формируем POST-запрос
-    http.fetch({
-        url = SETTINGS.api_url .. "/auth/login",
-        timeout = SETTINGS.request_timeout,
-        method = "POST",
-        extra_headers = {
-            "X-Server-Token: " .. SETTINGS.server_token,
-            "Content-Type: application/json",
-        },
-        data = minetest.write_json({
-            username = username,
-            password = password,
-        }),
-    }, function(result)
-        if not result.succeeded then
-            minetest.log("error", "[auth_laravel] Ошибка подключения к API")
-            callback(nil)
-            return
-        end
-
-        local data = minetest.parse_json(result.data)
-        if not data or not data.success then
-            minetest.log("action", "[auth_laravel] Неверные credentials для " .. username)
-            callback(nil)
-            return
-        end
-
-        callback(data)
-    end)
+local function db_set(username, data)
+    storage:set_string("player:" .. username, minetest.write_json(data))
 end
 
 -- -------------------------------------------
 -- ПРИМЕНЕНИЕ ПРИВИЛЕГИЙ
--- Выдаёт игроку привилегии согласно статусу из Laravel
--- Список привилегий настраивается на стороне Laravel API
 -- -------------------------------------------
-local function apply_privileges(player_name, privileges)
-    -- Сбрасываем текущие привилегии
-    local current = minetest.get_player_privs(player_name)
-    for priv, _ in pairs(current) do
-        current[priv] = nil
-    end
+local STATUS_PRIVS = {
+    basic   = {"interact", "shout"},
+    vip     = {"interact", "shout", "fly", "fast", "home"},
+    premium = {"interact", "shout", "fly", "fast", "home", "noclip", "teleport"},
+    admin   = {"interact", "shout", "fly", "fast", "home", "noclip", "teleport", "setspawn", "ban", "kick"},
+}
 
-    -- Применяем привилегии из API
+local function get_privs_for_status(status)
+    return STATUS_PRIVS[status] or STATUS_PRIVS["basic"]
+end
+
+local function apply_privileges(player_name, privileges)
     local new_privs = {}
     for _, priv in ipairs(privileges) do
         new_privs[priv] = true
     end
-
     minetest.set_player_privs(player_name, new_privs)
-    minetest.log("action", "[auth_laravel] Привилегии применены для " .. player_name .. ": " .. table.concat(privileges, ", "))
+    minetest.log("action", "[auth_laravel] Привилегии применены для " .. player_name)
 end
 
 -- -------------------------------------------
+-- STUB: предустановленные аккаунты (только первый раз)
+-- Если admin ещё не в БД — создаём с дефолтным паролем "admin123"
+-- СМЕНИТЕ ПАРОЛЬ ПОСЛЕ ПЕРВОГО ВХОДА командой /setpassword
+-- -------------------------------------------
+local function ensure_default_accounts()
+    if not db_get("admin") then
+        db_set("admin", {
+            password_hash = hash_password("admin", "admin123"),
+            status = "admin",
+            privileges = get_privs_for_status("admin"),
+        })
+        minetest.log("action", "[auth_laravel] Создан дефолтный аккаунт admin (пароль: admin123)")
+    end
+end
+
+-- -------------------------------------------
+-- РЕГИСТРАЦИЯ: шаг 1 — запрос пароля
+-- -------------------------------------------
+local function start_register(player_name)
+    pending[player_name] = { step = "password" }
+    minetest.chat_send_player(player_name,
+        "=== РЕГИСТРАЦИЯ ===\nВы новый игрок. Введите пароль для вашего аккаунта:"
+    )
+    minetest.chat_send_player(player_name, "(Никто кроме вас не сможет войти с этим ником)")
+end
+
+-- -------------------------------------------
+-- ВХОД: запрос пароля у существующего игрока
+-- -------------------------------------------
+local function start_login(player_name)
+    pending[player_name] = { step = "login_password" }
+    minetest.chat_send_player(player_name,
+        "=== ВХОД ===\nВведите пароль для аккаунта '" .. player_name .. "':"
+    )
+end
+
+-- -------------------------------------------
+-- ОБРАБОТЧИК СООБЩЕНИЙ — перехватываем пароль
+-- -------------------------------------------
+minetest.register_on_chat_message(function(player_name, message)
+    local state = pending[player_name]
+    if not state then return false end -- не в процессе входа, пропускаем
+
+    -- Скрываем сообщение от других игроков
+    -- (возвращаем true = сообщение "съедено")
+
+    if state.step == "password" then
+        -- Регистрация: первый ввод пароля
+        if #message < 4 then
+            minetest.chat_send_player(player_name, "Пароль слишком короткий (минимум 4 символа). Попробуйте снова:")
+            return true
+        end
+        state.password = message
+        state.step = "confirm"
+        minetest.chat_send_player(player_name, "Повторите пароль для подтверждения:")
+        return true
+
+    elseif state.step == "confirm" then
+        -- Регистрация: подтверждение пароля
+        if message ~= state.password then
+            minetest.chat_send_player(player_name, "Пароли не совпадают. Введите пароль заново:")
+            state.step = "password"
+            state.password = nil
+            return true
+        end
+
+        -- Сохраняем аккаунт
+        local data = {
+            password_hash = hash_password(player_name, message),
+            status = "basic",
+            privileges = get_privs_for_status("basic"),
+        }
+        db_set(player_name, data)
+        pending[player_name] = nil
+
+        apply_privileges(player_name, data.privileges)
+        minetest.chat_send_player(player_name,
+            "✓ Аккаунт создан! Ваш статус: basic\nДобро пожаловать, " .. player_name .. "!"
+        )
+        minetest.log("action", "[auth_laravel] Зарегистрирован новый игрок: " .. player_name)
+        return true
+
+    elseif state.step == "login_password" then
+        -- Вход: проверяем пароль
+        local data = db_get(player_name)
+        if not data then
+            -- Аккаунт исчез? Кикаем
+            minetest.kick_player(player_name, "Ошибка: аккаунт не найден.")
+            return true
+        end
+
+        if hash_password(player_name, message) ~= data.password_hash then
+            minetest.chat_send_player(player_name, "Неверный пароль. Попробуйте снова:")
+            return true
+        end
+
+        -- Пароль верный
+        pending[player_name] = nil
+        apply_privileges(player_name, data.privileges)
+        minetest.chat_send_player(player_name,
+            "✓ Вход выполнен! Ваш статус: " .. data.status .. "\nДобро пожаловать, " .. player_name .. "!"
+        )
+        minetest.log("action", "[auth_laravel] Игрок вошёл: " .. player_name .. " (статус: " .. data.status .. ")")
+        return true
+    end
+
+    return false
+end)
+
+-- -------------------------------------------
 -- ОБРАБОТЧИК ВХОДА ИГРОКА
--- Вызывается автоматически при подключении игрока
--- Порядок: авторизация → получение статуса → применение привилегий
 -- -------------------------------------------
 minetest.register_on_joinplayer(function(player)
     local player_name = player:get_player_name()
     minetest.log("action", "[auth_laravel] Игрок подключился: " .. player_name)
 
-    -- Шаг 1: авторизуем игрока
-    -- В реальном режиме пароль приходит от клиента через SRP-протокол
-    auth_login(player_name, "", function(auth_result)
-        if not auth_result then
-            -- Кикаем игрока если авторизация не удалась
-            minetest.kick_player(player_name, "Ошибка авторизации. Попробуйте позже.")
-            return
+    if SETTINGS.stub_mode then
+        -- Блокируем все привилегии до авторизации
+        minetest.set_player_privs(player_name, {})
+
+        local data = db_get(player_name)
+        if not data then
+            -- Новый игрок — регистрация
+            start_register(player_name)
+        else
+            -- Существующий игрок — требуем пароль
+            start_login(player_name)
         end
+        return
+    end
 
-        -- Шаг 2: получаем статус и привилегии
-        get_account_status(player_name, auth_result.token, function(account)
-            if not account then
-                minetest.kick_player(player_name, "Не удалось получить данные аккаунта.")
-                return
-            end
-
-            -- Шаг 3: применяем привилегии
-            apply_privileges(player_name, account.privileges)
-
-            -- Уведомляем игрока о статусе
-            minetest.chat_send_player(player_name,
-                "Добро пожаловать! Ваш статус: " .. account.status
-            )
-
-            minetest.log("action", "[auth_laravel] Статус игрока " .. player_name .. ": " .. account.status)
-        end)
-    end)
+    -- Реальный API режим (Laravel)
+    -- TODO: реализовать когда API будет готов
 end)
 
 -- -------------------------------------------
 -- ОБРАБОТЧИК ВЫХОДА ИГРОКА
--- Сбрасывает привилегии при выходе
 -- -------------------------------------------
 minetest.register_on_leaveplayer(function(player)
     local player_name = player:get_player_name()
+    pending[player_name] = nil
     minetest.log("action", "[auth_laravel] Игрок отключился: " .. player_name)
 end)
 
+-- -------------------------------------------
+-- КОМАНДА /setpassword — смена пароля
+-- -------------------------------------------
+minetest.register_chatcommand("setpassword", {
+    params = "<новый_пароль>",
+    description = "Сменить пароль аккаунта",
+    func = function(player_name, param)
+        if #param < 4 then
+            return false, "Пароль слишком короткий (минимум 4 символа)."
+        end
+        local data = db_get(player_name)
+        if not data then
+            return false, "Аккаунт не найден."
+        end
+        data.password_hash = hash_password(player_name, param)
+        db_set(player_name, data)
+        return true, "Пароль успешно изменён."
+    end,
+})
+
+-- -------------------------------------------
+-- КОМАНДА /setstatus — выдать статус игроку (только admin)
+-- -------------------------------------------
+minetest.register_chatcommand("setstatus", {
+    params = "<игрок> <basic|vip|premium|admin>",
+    description = "Установить статус игроку (только для admin)",
+    privs = { ban = true }, -- используем ban как маркер admin
+    func = function(caller, param)
+        local target, new_status = param:match("^(%S+)%s+(%S+)$")
+        if not target or not new_status then
+            return false, "Использование: /setstatus <игрок> <basic|vip|premium|admin>"
+        end
+        if not STATUS_PRIVS[new_status] then
+            return false, "Неизвестный статус. Доступны: basic, vip, premium, admin"
+        end
+
+        local data = db_get(target)
+        if not data then
+            return false, "Игрок '" .. target .. "' не найден в БД."
+        end
+
+        data.status = new_status
+        data.privileges = get_privs_for_status(new_status)
+        db_set(target, data)
+
+        -- Применяем немедленно если игрок онлайн
+        local player = minetest.get_player_by_name(target)
+        if player then
+            apply_privileges(target, data.privileges)
+            minetest.chat_send_player(target, "Ваш статус изменён на: " .. new_status)
+        end
+
+        return true, "Статус игрока " .. target .. " установлен на " .. new_status
+    end,
+})
+
+-- -------------------------------------------
+-- КОМАНДА /mystatus — посмотреть свой статус
+-- -------------------------------------------
+minetest.register_chatcommand("mystatus", {
+    description = "Показать текущий статус и привилегии",
+    func = function(player_name, _)
+        local data = db_get(player_name)
+        if not data then
+            return false, "Аккаунт не найден."
+        end
+        local privs_str = table.concat(data.privileges, ", ")
+        return true, "Статус: " .. data.status .. "\nПривилегии: " .. privs_str
+    end,
+})
+
+-- Инициализация
+ensure_default_accounts()
 minetest.log("action", "[auth_laravel] Модуль загружен. Stub-режим: " .. tostring(SETTINGS.stub_mode))
