@@ -184,6 +184,27 @@ minetest.register_on_joinplayer(function(player)
     local player_name = player:get_player_name()
     minetest.log("action", "[auth_laravel] Игрок подключился: " .. player_name)
 
+    -- Проверка временного бана (по нику, хранится в mod_storage)
+    local data_check = db_get(player_name)
+    if data_check and data_check.banned_until then
+        local now = os.time()
+        if data_check.banned_until > now then
+            local remaining = data_check.banned_until - now
+            local minutes = math.ceil(remaining / 60)
+            minetest.kick_player(player_name,
+                "Вы временно забанены. Осталось: " .. minutes .. " мин." ..
+                (data_check.ban_reason and ("\nПричина: " .. data_check.ban_reason) or "")
+            )
+            minetest.log("action", "[auth_laravel] Кикнут (temp-ban): " .. player_name)
+            return
+        else
+            -- Срок истёк — снимаем флаг
+            data_check.banned_until = nil
+            data_check.ban_reason = nil
+            db_set(player_name, data_check)
+        end
+    end
+
     if SETTINGS.stub_mode then
         -- Блокируем все привилегии до авторизации
         minetest.set_player_privs(player_name, {})
@@ -280,6 +301,78 @@ minetest.register_chatcommand("mystatus", {
         end
         local privs_str = table.concat(data.privileges, ", ")
         return true, "Статус: " .. data.status .. "\nПривилегии: " .. privs_str
+    end,
+})
+
+-- -------------------------------------------
+-- КОМАНДА /tempban — временный бан по нику (только admin)
+-- Игрок кикается при следующей попытке входа на N минут.
+-- -------------------------------------------
+minetest.register_chatcommand("tempban", {
+    params = "<игрок> <минуты> [причина]",
+    description = "Временно забанить игрока по нику (только для admin)",
+    privs = { ban = true },
+    func = function(caller, param)
+        local target, minutes_str, reason = param:match("^(%S+)%s+(%S+)%s*(.*)$")
+        if not target or not minutes_str then
+            return false, "Использование: /tempban <игрок> <минуты> [причина]"
+        end
+
+        local minutes = tonumber(minutes_str)
+        if not minutes or minutes <= 0 then
+            return false, "Минуты должны быть положительным числом."
+        end
+
+        local data = db_get(target)
+        if not data then
+            return false, "Игрок '" .. target .. "' не найден в БД."
+        end
+
+        data.banned_until = os.time() + (minutes * 60)
+        data.ban_reason = (reason ~= "" and reason) or nil
+        db_set(target, data)
+
+        -- Если онлайн — кикаем сразу
+        local player = minetest.get_player_by_name(target)
+        if player then
+            minetest.kick_player(target,
+                "Вы временно забанены на " .. minutes .. " мин." ..
+                (data.ban_reason and ("\nПричина: " .. data.ban_reason) or "")
+            )
+        end
+
+        minetest.log("action", "[auth_laravel] " .. caller .. " выдал temp-ban игроку " .. target .. " на " .. minutes .. " мин.")
+        return true, "Игрок " .. target .. " забанен на " .. minutes .. " минут."
+    end,
+})
+
+-- -------------------------------------------
+-- КОМАНДА /untempban — снять временный бан (только admin)
+-- -------------------------------------------
+minetest.register_chatcommand("untempban", {
+    params = "<игрок>",
+    description = "Снять временный бан по нику (только для admin)",
+    privs = { ban = true },
+    func = function(caller, target)
+        if not target or target == "" then
+            return false, "Использование: /untempban <игрок>"
+        end
+
+        local data = db_get(target)
+        if not data then
+            return false, "Игрок '" .. target .. "' не найден в БД."
+        end
+
+        if not data.banned_until then
+            return true, "Игрок " .. target .. " не находится во временном бане."
+        end
+
+        data.banned_until = nil
+        data.ban_reason = nil
+        db_set(target, data)
+
+        minetest.log("action", "[auth_laravel] " .. caller .. " снял temp-ban с игрока " .. target)
+        return true, "Временный бан снят с игрока " .. target .. "."
     end,
 })
 
