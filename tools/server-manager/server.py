@@ -6,6 +6,52 @@ SETTINGS = {
     "timeout":      10,
 }
 
+# Скрипт для чтения списка игроков из mod_storage.sqlite.
+# Ключи и значения хранятся как BLOB, поэтому работаем с bytes.
+_GET_PLAYERS_SCRIPT = r'''
+import sqlite3, json
+db = "/home/minetest/.minetest/worlds/world/mod_storage.sqlite"
+conn = sqlite3.connect(db)
+rows = conn.execute("SELECT key, value FROM entries WHERE modname='auth_laravel'").fetchall()
+result = []
+for k, v in rows:
+    key = k.decode("utf-8") if isinstance(k, bytes) else k
+    val = v.decode("utf-8") if isinstance(v, bytes) else v
+    if key.startswith("player:"):
+        data = json.loads(val)
+        data.pop("password_hash", None)
+        result.append({"name": key[7:], **data})
+print(json.dumps(result))
+conn.close()
+'''
+
+# Скрипт для установки статуса игрока.
+# {username} и {status_json} подставляются перед записью на сервер.
+_SET_STATUS_SCRIPT = r'''
+import sqlite3, json
+db = "/home/minetest/.minetest/worlds/world/mod_storage.sqlite"
+conn = sqlite3.connect(db)
+target_key = "player:{username}".encode("utf-8")
+rows = conn.execute("SELECT key, value FROM entries WHERE modname='auth_laravel'").fetchall()
+data = {{}}
+for k, v in rows:
+    key = k.decode("utf-8") if isinstance(k, bytes) else k
+    if key == "player:{username}":
+        val = v.decode("utf-8") if isinstance(v, bytes) else v
+        data = json.loads(val)
+        break
+data["status"] = "{status}"
+data["privileges"] = {privileges}
+conn.execute(
+    "INSERT OR REPLACE INTO entries (modname, key, value) VALUES ('auth_laravel', ?, ?)",
+    (target_key, json.dumps(data).encode("utf-8"))
+)
+conn.commit()
+conn.close()
+print("OK")
+'''
+
+
 class ServerConnection:
 
     def __init__(self):
@@ -52,6 +98,26 @@ class ServerConnection:
             return out, err
         except Exception as e:
             return "", str(e)
+
+    def run_python_script(self, script):
+        """
+        Загружает python-скрипт на сервер во временный файл и выполняет его.
+        Это надёжнее, чем передавать код через -c с экранированием кавычек.
+        """
+        if not self.connected:
+            return "", "Нет подключения"
+        remote_path = "/tmp/_mgr_script.py"
+        try:
+            sftp = self.client.open_sftp()
+            with sftp.file(remote_path, "w") as f:
+                f.write(script)
+            sftp.close()
+        except Exception as e:
+            return "", f"Ошибка записи скрипта: {e}"
+
+        out, err = self.run_command(f"python3 {remote_path}")
+        self.run_command(f"rm -f {remote_path}")
+        return out, err
 
     def start_server(self):
         out, err = self.run_command(f"sudo systemctl start {SETTINGS['service_name']} 2>&1 && echo OK")
@@ -117,29 +183,12 @@ class ServerConnection:
         return out if out else "Логи недоступны"
 
     def get_players(self):
-        cmd = (
-            "python3 -c \""
-            "import sqlite3, json;"
-            "db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
-            "conn = sqlite3.connect(db);"
-            "rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel'\\\").fetchall();"
-            "result = [];"
-            "[(lambda k, v: result.append({'name': k[7:], **json.loads(v)}) if k.startswith('player:') else None)("
-            "(r[0].decode() if isinstance(r[0], bytes) else r[0]),"
-            "(r[1].decode() if isinstance(r[1], bytes) else r[1])"
-            ") for r in rows];"
-            "print(json.dumps(result));"
-            "conn.close()\""
-        )
-        out, err = self.run_command(cmd)
+        out, err = self.run_python_script(_GET_PLAYERS_SCRIPT)
         if not out:
             return []
         try:
             import json
-            players = json.loads(out)
-            for p in players:
-                p.pop("password_hash", None)
-            return players
+            return json.loads(out)
         except Exception:
             return []
 
@@ -151,24 +200,17 @@ class ServerConnection:
             "admin":   ["interact", "shout", "fly", "fast", "home", "noclip", "teleport", "setspawn", "ban", "kick"],
         }
         privs = STATUS_PRIVS.get(new_status, ["interact", "shout"])
+
         import json
-        privs_json = json.dumps(privs)
-        cmd = (
-            f"python3 -c \""
-            f"import sqlite3, json;"
-            f"db = '/home/minetest/.minetest/worlds/world/mod_storage.sqlite';"
-            f"conn = sqlite3.connect(db);"
-            f"rows = conn.execute(\\\"SELECT key, value FROM entries WHERE modname='auth_laravel'\\\").fetchall();"
-            f"row = None;"
-            f"[(lambda k, v: globals().update(row=v) if (k.decode() if isinstance(k, bytes) else k) == 'player:{username}' else None)(r[0], r[1]) for r in rows];"
-            f"data = json.loads(row.decode() if isinstance(row, bytes) else row) if row else {{}};"
-            f"data['status'] = '{new_status}';"
-            f"data['privileges'] = {privs_json};"
-            f"conn.execute(\\\"INSERT OR REPLACE INTO entries (modname, key, value) VALUES ('auth_laravel', 'player:{username}', ?)\\\", (json.dumps(data),));"
-            f"conn.commit(); conn.close(); print('OK')\""
+        script = _SET_STATUS_SCRIPT.format(
+            username=username,
+            status=new_status,
+            privileges=json.dumps(privs),
         )
-        out, err = self.run_command(cmd)
-        return "OK" in out, err if "OK" not in out else None
+        out, err = self.run_python_script(script)
+        if "OK" in out:
+            return True, None
+        return False, err or out or "Неизвестная ошибка"
 
     def ban_player(self, username):
         self.run_command(
